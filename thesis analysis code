@@ -1,0 +1,845 @@
+#Packages
+library(plm)
+library(dplyr)
+library(ggplot2)
+library(stargazer)
+options(scipen = 999)
+library(haven)
+library(tidyverse)
+library(descr)
+library(viridis)
+library(gtsummary)
+library(feather)
+library(sjPlot)
+library(sjmisc)
+library(plm)
+library(lmtest)
+library(sandwich)
+
+##IMPORT DATA and merge waves##
+
+wave <-20     #  Number of wave data files to extract. Here uses wave=5 as an example.
+maxwave <- 20  # Update to the latest wave.
+rls <- 200     # Update to the latest release.
+origdatdir <-  "/Users/livaitken/Documents/HERTIE/Thesis/2. Stata 200c (Zip file 1 of 2 - Combined Data Files)"# Location of original HILDA data files
+newdatadir <- "/Users/livaitken/Documents/HERTIE/Thesis/Created Files" # Location of writing new data files
+
+# Choose variables
+
+setwd(origdatdir)
+
+var <- c("hhrhid", "hhrpid", "hhpxid","hhfxid","hhmxid", "hhsos", ##ids
+         "hgsex", #sex
+         "hhfty", "hhtype", #family and household type
+         "hgage", #age
+         "lebth","tcr", "rchave", ## child resident, life event:child birth in last year
+         "jbhruc","esbrd", ## job hours, employment status
+         "wscei", #imputed current weekly gross wages & salary in all jobs
+         "wscmei", #imputed gross wages in main job
+         "jbmhruc", #usual average hours in main job
+         "hhura", # local unemployment in statistical area
+         "hhsad10","hhsec10","hhsed10", #socioeconomic indexes
+         "hhsgcc", #abs greater cap cities
+         "anbcob" ,#Country of birth (full, brief)
+         "anatsi", #Aboriginal or Torres Strait Islander origin
+         "jbmo61", #type of work
+         "edhigh1", "edfts", #education + full time student status
+         "hhstate",#state
+         "rcage1", "rcage2", "rcage3", "rcage4", "rcage5", "rcage6", "rcage7", "rcage8", "rcage9", "rcage10") ##ages of resident children
+
+##Com
+for( i in 3:wave) {
+  file_list <- paste0("Combined_", letters[i], rls, "c.dta")
+  var_add <- paste0(letters[i], var) 
+  var_add<-c("xwaveid",var_add)
+  temp <- read_dta(file_list,col_select=var_add)
+  #var_add <- paste0(letters[i], var) # Add wave letter onto the variable names
+  #temp <- temp %>% dplyr::select(xwaveid, any_of(var_add)) 
+  # any_of() lets the program avoid selecting the variable not included in a specific wave and set NA to that variable. eg: "hwhmhl" not included in wave 1
+  names(temp)[-1] <-substring(names(temp)[-1], 2) # Remove wave letter from variable names except for xwaveid
+  temp$wave <- i
+  if (i == 3 ){
+    longfileallwaves <- temp
+  } else {
+    longfileallwaves <- bind_rows(longfileallwaves, temp) # Append the data file from each wave
+  }
+}
+
+colnames(longfileallwaves)
+
+##Add partner variables (employment status and education)
+
+setwd(origdatdir)
+
+rp_var <- c("esdtl", "edhigh1","hgsex")
+
+final_data_test_merge <- data.frame()
+final_df<-longfileallwaves
+for( i in 3:wave) {
+  file_list <- paste0("RPerson_", letters[i], rls, "c.dta")
+  rp_var_add <- paste0(letters[i], rp_var) 
+  rp_var_add<-c("xwaveid", rp_var_add)
+  temp <- read_dta(file_list,col_select=rp_var_add)
+  print(colnames(temp))
+  colnames(temp) <- c("hhpxid",  "partsex","partesdtl", "partedhigh1")
+  temp$wave <- i
+  
+  #temp$hhpxid <- as.character(temp$hhpxid)
+  temp$partesdtl<- as.numeric(temp$partesdtl)
+  temp$partedhigh1<- as.numeric(temp$partedhigh1)
+  print(colnames(temp))
+  
+  final_df <-  left_join(final_df, temp, by = c("hhpxid", "wave"))
+
+  }
+
+final_df <- final_df %>% 
+  mutate(partesdtl = reduce(select(., starts_with("partesdtl")), coalesce)) %>% 
+  select(-starts_with("partesdtl."))
+table(final_df$partesdtl, final_df$wave)
+
+final_df <-final_df%>% 
+  mutate(partedhigh1 = reduce(select(., starts_with("partedhigh1")), coalesce)) %>% 
+  select(-starts_with("partedhigh1."))
+table(final_df$partedhigh1, final_df$wave)
+
+final_df <- final_df %>% 
+  mutate(partsex = reduce(select(., starts_with("partsex")), coalesce)) %>% 
+  select(-starts_with("partsex."))
+table(final_df$partsex, final_df$wave)
+
+
+## Subset to men only
+final_data_men <- subset(final_df, final_df$hgsex==1)
+
+#Further listwise deletion
+
+final_data_men_age<- final_data_men %>%
+  filter(hgage>=20 & hgage<=59)
+
+freq(final_data_men_age$jbhruc)
+freq(final_data_men_age$hgage)
+
+final_data_men_jb<- final_data_men_age %>%
+  filter(!jbhruc<=-2) #also filtered out a lot of 'non-responding persons'
+
+freq(final_data_men_jb$jbhruc)
+
+final_data_men_rc<- final_data_men_jb %>%
+  filter(!rchave<0)
+
+final_data_men_lu<- final_data_men_rc %>%
+  filter(!hhura<0)
+
+final_data_men_ed<- final_data_men_lu %>%
+  filter(!edhigh1<0)
+
+final_data_men_back<- final_data_men_ed%>%
+  filter(!anatsi< -1)%>%
+  filter(!anbcob<0)
+
+final_data_men_stu<- final_data_men_back %>%
+  filter(!edfts>1)
+
+
+
+final_final_men <- final_data_men_stu
+
+freq(final_final_men$rchave)
+table(final_final_men$tcr,final_final_men$rchave)
+##Variable creation
+
+#Var: Id & WAVE
+
+final_final_men$ID<-as.factor(final_final_men$xwaveid)
+final_final_men$WAVE<-as.factor(final_final_men$wave)
+
+#Var: Continuous variables
+final_final_men$jbhruc<-as.numeric(final_final_men$jbhruc)
+final_final_men$AGE<-as.numeric(final_final_men$hgage)
+final_final_men$LOCALUNEMPLOYMENT<-as.numeric(final_final_men$hhura)
+freq(final_final_men$AGE)
+
+#Var:Average Hours Worked
+final_final_men$AHW<- -1
+final_final_men$AHW<-final_final_men$jbhruc
+final_final_men$AHW[final_final_men$jbhruc==-1]<- 0
+final_final_men$AHW<-as.numeric(final_final_men$AHW)
+freq(final_final_men$AHW)
+
+#Var: LOG Average Hours Worked
+c <- 0.001
+final_final_men$log_AHW <- log(final_final_men$AHW + c)
+freq(final_final_men$log_AHW)
+
+#Var: Has resident kids simple
+final_final_men$haskidssimple<-"NA"
+final_final_men$haskidssimple[final_final_men$tcr>=1]<- "1"
+final_final_men$haskidssimple[final_final_men$tcr<=0]<- "0"
+final_final_men$haskidssimple<-as.numeric(final_final_men$haskidssimple)
+freq(final_final_men$haskidssimple)
+
+#Var: Education
+final_final_men$EDU="NA"
+final_final_men$EDU[final_final_men$edhigh1>=1]<-"3-University education or higher"
+final_final_men$EDU[final_final_men$edhigh1>=4]<-"2-Diploma or certificate"
+final_final_men$EDU[final_final_men$edhigh1>=8]<-"1-Some or all high school or undetermined"
+final_final_men$EDU<-as.factor(final_final_men$EDU)
+freq(final_final_men$EDU)
+
+#Var: Background
+freq(final_final_men$anbcob)
+freq(final_final_men$anengf)
+freq(final_final_men$anatsi)
+
+final_final_men$BCKGRD="NA"
+final_final_men$BCKGRD[final_final_men$anbcob==1]<-"1-Born in Australia - not Aboriginal or Torres Strait Islander"
+final_final_men$BCKGRD[final_final_men$anatsi>=2]<-"2-Born in Australia - Aboriginal and/or Torres Strait Islander"
+final_final_men$BCKGRD[final_final_men$anbcob==2]<-"3-Not born in Australia - from a mainly English speaking country"
+final_final_men$BCKGRD[final_final_men$anbcob==3]<-"4-Not born in Australia - from a non-English speaking country"
+final_final_men$BCKGRD<-as.factor(final_final_men$BCKGRD)
+freq(final_final_men$BCKGRD)
+
+#Var: Employment status
+final_final_men$EMPST="NA"
+final_final_men$EMPST[final_final_men$esbrd==1]<-"3-Employed"
+final_final_men$EMPST[final_final_men$esbrd==2]<-"2-Unemployed"
+final_final_men$EMPST[final_final_men$esbrd==3]<-"1-Not in the labour force"
+freq(final_final_men$EMPST)
+
+#Var: Type of work
+final_final_men$EMPLOYTYPE="Unknown or not currently working"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==1]<-"Managers"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==2]<-"Professionals"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==3]<-"Technicians and Trades Workers"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==4]<-"Community and Personal Service Workers"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==5]<-"Clerical and Administrative Workers"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==6]<-"Sales Workers"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==7]<-"Machinery Operators and Drivers"
+final_final_men$EMPLOYTYPE[final_final_men$jbmo61==8]<-"Labourers"
+
+
+#Var: Year
+final_final_men$YEAR="NA"
+final_final_men$YEAR[final_final_men$wave==3]<-"2003"
+final_final_men$YEAR[final_final_men$wave==4]<-"2004"
+final_final_men$YEAR[final_final_men$wave==5]<-"2005"
+final_final_men$YEAR[final_final_men$wave==6]<-"2006"
+final_final_men$YEAR[final_final_men$wave==7]<-"2007"
+final_final_men$YEAR[final_final_men$wave==8]<-"2008"
+final_final_men$YEAR[final_final_men$wave==9]<-"2009"
+final_final_men$YEAR[final_final_men$wave==10]<-"2010"
+final_final_men$YEAR[final_final_men$wave==11]<-"2011"
+final_final_men$YEAR[final_final_men$wave==12]<-"2012"
+final_final_men$YEAR[final_final_men$wave==13]<-"2013"
+final_final_men$YEAR[final_final_men$wave==14]<-"2014"
+final_final_men$YEAR[final_final_men$wave==15]<-"2015"
+final_final_men$YEAR[final_final_men$wave==16]<-"2016"
+final_final_men$YEAR[final_final_men$wave==17]<-"2017"
+final_final_men$YEAR[final_final_men$wave==18]<-"2018"
+final_final_men$YEAR[final_final_men$wave==19]<-"2019"
+final_final_men$YEAR[final_final_men$wave==20]<-"2020"
+freq(final_final_men$YEAR)
+
+#Var: Average hourly wages in all jobs
+
+final_final_men$AVG_HOURLY_WAGE <- NA 
+final_final_men$AVG_HOURLY_WAGE <- ifelse(final_final_men$esbrd==1 & final_final_men$jbhruc>0 & final_final_men$wscei>0, final_final_men$wscei/final_final_men$jbhruc, NA)
+summary(final_final_men$AVG_HOURLY_WAGE)
+freq(final_final_men$AVG_HOURLY_WAGE)
+final_final_men$log_AH_WAGE <- log(final_final_men$AVG_HOURLY_WAGE)
+
+
+#Var: Average hourly wage in main job
+
+final_final_men$AVG_HOURLY_WAGE_MAIN <- NA 
+final_final_men$AVG_HOURLY_WAGE_MAIN <- ifelse(final_final_men$esbrd==1 & final_final_men$jbmhruc>0 & final_final_men$wscmei>0, final_final_men$wscmei/final_final_men$jbmhruc, NA)
+summary(final_final_men$AVG_HOURLY_WAGE_MAIN)
+
+final_final_men$log_AH_WAGE_MAIN <- log(final_final_men$AVG_HOURLY_WAGE_MAIN)
+
+#Var:age category by 5
+
+final_final_men$AGE<-as.numeric(final_final_men$AGE)
+final_final_men$AGEC="NA"
+final_final_men$AGEC[final_final_men$AGE>=20]<-"20-25"
+final_final_men$AGEC[final_final_men$AGE>=26]<-"26-30"
+final_final_men$AGEC[final_final_men$AGE>=31]<-"31-35"
+final_final_men$AGEC[final_final_men$AGE>=36]<-"36-40"
+final_final_men$AGEC[final_final_men$AGE>=41]<-"41-45"
+final_final_men$AGEC[final_final_men$AGE>=46]<-"46-50"
+final_final_men$AGEC[final_final_men$AGE>=51]<-"51-55"
+final_final_men$AGEC[final_final_men$AGE>=56]<-"56-60"
+final_final_men$AGEC<-as.factor(final_final_men$AGEC)
+
+freq(final_men$AGE)
+
+
+#Var: age category by 10
+final_final_men$AGE<-as.numeric(final_final_men$AGE)
+final_final_men$AGEC10="NA"
+final_final_men$AGEC10[final_final_men$AGE>=20]<-"20-30"
+final_final_men$AGEC10[final_final_men$AGE>=31]<-"31-40"
+final_final_men$AGEC10[final_final_men$AGE>=41]<-"41-50"
+final_final_men$AGEC10[final_final_men$AGE>=51]<-"51-59"
+final_final_men$AGEC10<-as.factor(final_final_men$AGEC10)
+
+#Var: Age of oldest child
+final_final_men <- final_final_men %>%
+  rowwise() %>%
+  mutate(age_oldest_child = ifelse(tcr<=0, -1, pmax(rcage1, rcage2, rcage3, rcage4, rcage5, rcage6, rcage7, rcage8, rcage9, rcage10)))
+final_final_men$age_oldest_child[final_final_men$age_oldest_child=="NA"]<--1
+freq(final_final_men$age_oldest_child)
+table(final_final_men$age_oldest_child, final_final_men$haskids)
+
+#Var: Has resident kids 
+final_final_men$haskids<-"NA"
+final_final_men$haskids[final_final_men$tcr>0]<- "2-Has own resident child"
+final_final_men$haskids[final_final_men$tcr<=0]<- "1-No own resident children"
+final_final_men$haskids<-as.factor(final_final_men$haskids)
+freq(final_final_men$haskids)
+
+#Remove incongruous results (no age of oldest child but has resident children)
+
+final_final_men <- final_final_men %>% 
+  filter(!(age_oldest_child == -1 & haskids == "2-Has own resident children"))
+
+#Var: Age of oldest child category (excluding very old children)
+
+final_final_men$AGEC_oldest_child="1-No child in household"
+final_final_men$AGEC_oldest_child[final_final_men$age_oldest_child>=0]<-"2-Up to one year old"
+final_final_men$AGEC_oldest_child[final_final_men$age_oldest_child>=1]<-"3-Between one and four years old"
+final_final_men$AGEC_oldest_child[final_final_men$age_oldest_child>=5]<-"4-Five years and older"
+final_final_men$AGEC_oldest_child<-as.factor(final_final_men$AGEC_oldest_child)
+freq(final_final_men$AGEC_oldest_child)
+final_final_men$AGEC_oldest_child <- relevel(final_final_men$AGEC_oldest_child, ref = "1-No child in HH")
+
+
+#Var: Partner variables
+# Var: Single or not single + same sex couples
+
+freq(final_final_men$partsex)
+final_final_men$COUPLE="1-No live in partner"
+final_final_men$COUPLE[final_final_men$partsex==1]<-"3-Same-sex live in partner"
+final_final_men$COUPLE[final_final_men$partsex==2]<-"2-Different-sex live in partner"
+final_final_men$COUPLE<-as.factor(final_final_men$COUPLE)
+freq(final_final_men$COUPLE)
+
+#Var: Partner's education
+final_final_men$PARTEDU="4-No live in partner"
+final_final_men$PARTEDU[final_final_men$partedhigh1>=1]<-"3-University education or higher"
+final_final_men$PARTEDU[final_final_men$partedhigh1>=4]<-"2-Diploma or certificate"
+final_final_men$PARTEDU[final_final_men$partedhigh1>=8]<-"1-Some or all high school or undetermined"
+final_final_men$PARTEDU<-as.factor(final_final_men$PARTEDU)
+freq(final_final_men$PARTEDU)
+
+#Var: Partner's employment status
+
+freq(final_final_men$partesdtl)
+final_final_men$partesdtl<-as.numeric(final_final_men$partesdtl)
+final_final_men$PARTEMP="5-No live in partner"
+final_final_men$PARTEMP[final_final_men$partesdtl==1]<-"4-Employed FT"
+final_final_men$PARTEMP[final_final_men$partesdtl==2 | final_final_men$partesdtl==7]<-"3-Employed PT"
+final_final_men$PARTEMP[final_final_men$partesdtl>=3]<-"2-Unemployed"
+final_final_men$PARTEMP[final_final_men$partesdtl>=5 & final_final_men$partesdtl<=6]<-"1-Not in labour force"
+final_final_men$PARTEMP<-as.factor(final_final_men$PARTEMP)
+freq(final_final_men$PARTEMP)
+
+###Remove partnerless men
+freq(final_final_men$partsex)
+
+final_final_nopart <- final_final_men %>%
+  filter(!partsex=="NA")
+freq(final_onekid$tcr)
+
+
+#Remove fathers after they no longer live with children
+
+final_nopostchild <- final_final_nopart %>%
+  group_by(ID) %>%
+  arrange(wave) %>%
+  mutate(flag = cumsum(c(TRUE, diff(haskidssimple) < 0))) %>%
+  ungroup() %>%
+  mutate(flag = ifelse(flag == 1, TRUE, FALSE))
+
+final_men<- final_nopostchild %>%
+  filter(!flag==FALSE)
+
+## Censor at one child (e.g. remove observations where respondents have more than one child)
+final_onekid <-final_men %>%
+  filter(!tcr>1)
+freq(final_onekid$tcr)
+
+##Censor at oldest resident child age =18
+final_onekid_censored <-final_onekid %>%
+  filter(!age_oldest_child>=19)
+freq(final_onekid_censored$age_oldest_child)
+
+
+#filter less than one ob
+final_onekid_panel <- final_onekid_censored %>%
+  group_by(xwaveid) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+final <- final_onekid_panel
+
+#number who are ever fathers
+
+final<- final %>% 
+  group_by(xwaveid) %>% 
+  mutate(transition_to_parenthood = ifelse(1 %in% tcr, "father", "not father")) %>%
+  ungroup()
+
+freq(final_onekid_censored1$transition_to_parenthood)
+
+final %>% 
+  group_by(transition_to_parenthood) %>% 
+  summarize(n_unique = n_distinct(xwaveid)) %>%
+  mutate(prop = n_unique / sum(n_unique)) %>%
+  print()
+
+2536+2362
+
+#Summary of variables
+
+library(table1)
+table1::label(final$AHW) <- "Weekly hours usually worked"
+table1::label(final$AGE) <- "Age of respondent"
+table1::label(final$EMPST) <- "Broad employment status"
+table1::label(final$haskids) <- "Has resident children"
+table1::label(final$EDU) <- "Highest level of education"
+table1::label(final$AGEC_oldest_child)  <- "Age of oldest resident child"
+table1::label(final$PARTEMP)  <- "Partner's employment status"
+table1::label(final$PARTEDU)  <- "Partner's education level"
+table1::label(final$COUPLE)  <- "Partner status"
+table1::label(final$LOCALUNEMPLOYMENT)  <- "Local unemployment rate"
+table1::label(final$BCKGRD)  <- "Migration background and Aboriginal and/or Torres Strait Islander Status"
+table1::table1(~ AHW + AGEC_oldest_child + AGE +BCKGRD+ EDU + EMPST +  PARTEMP
+               + LOCALUNEMPLOYMENT | haskids, data = final)
+
+
+##Summary statistics differences
+39.8-33.7
+38.2-34.3
+42.3+26.3
+34.4+23.1
+5.8+11.8
+3.7+6.5
+6.1+10.2
+27.7
+100-81.2
+table(final_men$COUPLE, final_men$age_oldest_child)
+
+##Descriptive statistics: part 1##
+library(viridis)
+
+#Density Plot of responses facetted by age category
+
+freq(final$AHW)
+viridis_palette <- viridis(2)
+viridis_palette[1] <- "#33638DFF"
+viridis_palette[2] <- "#DCE319FF" 
+
+ggplot(final, aes(x = AHW, y = ..density.., fill = haskids)) +
+  geom_density(alpha = 0.5) +
+  coord_cartesian(xlim = c(0, 100)) +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 12),
+        guides(color = guide_legend(direction = "horizontal"))) +
+  scale_fill_manual(name = "Resident children",
+                    labels = c("No resident children", "Has resident child"),
+                    values = viridis_palette) + 
+  facet_wrap(~ AGEC10, ncol = 2) +
+  labs(x = "Usual hours worked (capped at 100)", y = "Density of responses") +
+  theme_classic()+
+  geom_vline(xintercept=38,linetype=2)
+
+##APPENDIX: HISTOGRAM: Ave hours worked by whether respondent has children and ag
+
+final$AHW_Grouped <- cut(final$AHW, breaks=seq(0, 100, by=10))
+TABLE1 <- table(final$haskids, final$AHW_Grouped)
+TABLE2 <- prop.table(TABLE1, 1)
+TABLE3 <- as.data.frame(TABLE2)
+TABLE3$Percent <- TABLE3$Freq * 100
+TABLE3
+ggplot(TABLE3, aes(fill = Var1, x = Var2, y = Percent)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 1)) +
+  ylab("Proportion of responses") +
+  xlab("Usual hours worked (grouped by 10)") +
+  scale_fill_manual(name = "Resident children", 
+                    labels = c("No resident children", "Has resident child"),
+                    values = viridis_palette) + theme(legend.position = "bottom",
+                                                      axis.title = element_text(size = 16))+
+  scale_x_discrete(labels = c("0-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80-89", "90-100"))
+
+##Ave working hours by year by age and whether or not respondent has kids (line graph)
+
+average_working_hours_byyear <- final %>%
+  group_by(YEAR, haskids, AGEC10) %>%
+  summarize(avg_working_hours = mean(AHW))
+
+viridis_palette2 <- viridis(4)
+
+ggplot(average_working_hours_byyear, aes(x = YEAR, y = avg_working_hours, group = AGEC10, col=as.factor(AGEC10))) +
+  geom_line() +
+  labs(x = "Year", y = "Average working hours", color= "Age group") +
+  theme_bw() +
+  facet_wrap(~ haskids, nrow = 2) +
+  scale_color_manual(values = viridis_palette2)+
+  theme(legend.position = "bottom",
+        legend.key.height = unit(1,"cm"),
+        legend.key.width = unit(1,"cm"),
+        legend.background = element_blank(),
+        legend.text = element_text(size = 12, color = "black"))+
+  geom_hline(yintercept=38,linetype=3)
+
+##ANALYSIS##
+##Transition to fatherhood OLS + Fixed effects
+
+OLS1<-lm(AHW ~ haskids+AGE+YEAR+EDU+LOCALUNEMPLOYMENT+BCKGRD+PARTEMP, data=final)
+FE1<-plm(AHW ~ haskids+AGE+YEAR+LOCALUNEMPLOYMENT+PARTEMP, data=final, index=c("ID","YEAR"), model = "within")
+
+TABLE01<-tbl_regression(OLS1, label = list(AGE = "Age of respondent",
+                                           haskids = "Has resident children",
+                                           EDU = "Highest education level",
+                                           AHW = "Usual weekly hours worked",
+                                           LOCALUNEMPLOYMENT = "Average local unemployment rate",
+                                           EMPLOYTYPE = "Employment classification",
+                                           YEAR = "Year",
+                                           BCKGRD = "Ethnic and migration background",
+                                           PARTEMP = "Partner's employment status"))
+TABLE02<-tbl_regression(FE1, label = list(AGE = "Age of respondent",
+                                          haskids = "Has resident children",
+                                          AHW = "Average weekly hours worked",
+                                          LOCALUNEMPLOYMENT = "Average local unemployment rate",
+                                          EMPLOYTYPE = "Employment classification",
+                                          YEAR = "Year",
+                                          BCKGRND = "Ethnic and migration background",
+                                          PARTEMP = "Partner's employment status"))
+tbl_merge(     
+  tbls = list(TABLE01,TABLE02),     
+  tab_spanner = c("**OLS Model 1**", "**FE Model 1**"))
+
+
+coeftest(FE1, vcov = vcovHC(FE1, type="sss"))
+robust_se <- sqrt(diag(vcovHC(OLS1)))
+
+summary(OLS1)
+cat("\nRobust standard errors:\n")
+cbind(Coefficients = coef(OLS1), `Robust SE` = robust_se)
+
+#calculate confidence intervals
+4.28060912+0.23291507
+4.28060912-0.23291507
+1.771894-0.408674
+1.771894+0.408674
+
+##Robustness checks
+final$YEAR <- as.factor(final$YEAR)
+OLS2<-lm(AHW ~ haskids+AGE+YEAR+EDU+LOCALUNEMPLOYMENT+BCKGRD, data=final)
+FE2<-plm(AHW ~ haskids+AGE+YEAR+LOCALUNEMPLOYMENT, data=final, index=c("ID","YEAR"), model = "within")
+
+TABLE01<-tbl_regression(OLS2, label = list(AGE = "Age of respondent",
+                                           haskids = "Has resident children",
+                                           EDU = "Highest education level",
+                                           AHW = "Usual weekly hours worked",
+                                           LOCALUNEMPLOYMENT = "Average local unemployment rate",
+                                           EMPLOYTYPE = "Employment classification",
+                                           YEAR = "Year",
+                                           BCKGRD = "Ethnic and migration background",
+                                           PARTEMP = "Partner's employment status"))
+TABLE02<-tbl_regression(FE3, label = list(AGE = "Age of respondent",
+                                          haskids = "Has resident children",
+                                          AHW = "Average weekly hours worked",
+                                          LOCALUNEMPLOYMENT = "Average local unemployment rate",
+                                          EMPLOYTYPE = "Employment classification",
+                                          YEAR = "Year",
+                                          BCKGRND = "Ethnic and migration background",
+                                          PARTEMP = "Partner's employment status"))
+tbl_merge(     
+  tbls = list(TABLE01,TABLE02),     
+  tab_spanner = c("**OLS Model 1**", "**FE Model 1**"))
+  
+  ##Robustness checks 2###
+final$YEAR <- as.factor(final$YEAR)
+OLS3<-lm(AHW ~ haskids+AGE+YEAR+EDU+LOCALUNEMPLOYMENT+BCKGRD+PARTEMP+EMPLOYTYPE, data=final)
+FE3<-plm(AHW ~ haskids+AGE+YEAR+LOCALUNEMPLOYMENT+PARTEMP+EMPLOYTYPE, data=final, index=c("ID","YEAR"), model = "within")
+
+TABLE01<-tbl_regression(OLS3, label = list(AGE = "Age of respondent",
+                                           haskids = "Has resident children",
+                                           EDU = "Highest education level",
+                                           AHW = "Usual weekly hours worked",
+                                           LOCALUNEMPLOYMENT = "Average local unemployment rate",
+                                           EMPLOYTYPE = "Employment classification",
+                                           YEAR = "Year",
+                                           BCKGRD = "Ethnic and migration background",
+                                           PARTEMP = "Partner's employment status"))
+TABLE02<-tbl_regression(FE3, label = list(AGE = "Age of respondent",
+                                          haskids = "Has resident children",
+                                          AHW = "Average weekly hours worked",
+                                          LOCALUNEMPLOYMENT = "Average local unemployment rate",
+                                          EMPLOYTYPE = "Employment classification",
+                                          YEAR = "Year",
+                                          BCKGRND = "Ethnic and migration background",
+                                          PARTEMP = "Partner's employment status"))
+tbl_merge(     
+  tbls = list(TABLE01,TABLE02),     
+  tab_spanner = c("**OLS Model**", "**FE Model**"))
+  
+  
+  ##Plot predicted values based on time period and age of oldest child
+
+final$PERIOD="NA"
+final$PERIOD[final$wave>=3]<-"2003-2012"
+final$PERIOD[final$wave>=13]<-"2013-2020"
+final$PERIOD<-as.factor(final$PERIOD)
+freq(final$PERIOD)
+
+plot_model<-lm(AHW ~ AGEC_oldest_child*PERIOD+PARTEMP+AGE+EDU+LOCALUNEMPLOYMENT+BCKGRD, data=final)
+summary(plot_model)
+
+set_theme(base = theme_light())
+plot_model(plot_model, 
+           type = "pred", 
+           terms = c("AGEC_oldest_child","PERIOD"), 
+           col = viridis_palette3, 
+           xlab = "Time period", 
+           ylab = "Predicted values of usual hours worked",
+           axis.line = list(breaks = seq(min(final$AHW), max(final$AHW), by = 2))) 
+
+###Fixed effects version
+plot_model<-plm(AHW ~ AGEC_oldest_child*PERIOD+PARTEMP+AGE+LOCALUNEMPLOYMENT, data=final, index=c("ID"), model = "within")
+TABLE02<-tbl_regression(plot_model)
+
+tbl_merge(     
+  tbls = list(TABLE02),     
+  tab_spanner = c("**FE Model 2**"))
+
+
+##EMPLOYED ONLY SAMPLE
+
+#filter to employed only
+final_men_employed <- final %>%
+  filter(!esbrd>=2)
+#filter to wave 11+ only
+final_men_employed_11 <- final_men_employed %>%
+  filter(!wave<11)
+#add employment characteristics
+setwd(origdatdir)
+rp_var2 <- c("jowphbw", "jowpppl","jomflex")
+final_men_employed_11_merge <- final_men_employed_11
+for( i in 11:20) {
+  file_list <- c(paste0("RPerson_", letters[i], rls, "c.dta"))
+  rp_var_add2 <- paste0(letters[i], rp_var2)
+  rp_var_add2<-c("xwaveid", rp_var_add2)
+  temp2 <- read_dta(file_list,col_select=rp_var_add2)
+  print(colnames(temp2))
+  colnames(temp2) <- c("xwaveid","jomflex", "jowpppl", "jowphbw")
+  temp2$wave <- i
+  print(colnames(temp2))
+  temp2$xwaveid <- as.character(temp2$xwaveid)
+  temp2$wave <- as.numeric(temp2$wave)
+  #temp2$wave<- as.numeric(temp$partesdtl)
+  #temp$partedhigh1<- as.numeric(temp$partedhigh1)
+  final_men_employed_11_merge <-  left_join(final_men_employed_11_merge, temp2, by = c("xwaveid", "wave"))
+}
+
+table(temp2$wave,temp2$jbmh)
+print(colnames(final_men_employed_11_merge))
+class(final_men_employed_11$wave)
+
+final_men_employed_11_merge <- final_men_employed_11_merge %>% 
+  mutate(jowphbw = reduce(select(., starts_with("jowphbw")), coalesce)) %>% 
+  select(-starts_with("jowphbw."))
+table(final_men_employed_11_merge$jowphbw, final_men_employed_11_merge$wave)
+
+final_men_employed_11_merge <- final_men_employed_11_merge %>% 
+  mutate(jowpppl = reduce(select(., starts_with("jowpppl")), coalesce)) %>% 
+  select(-starts_with("jowpppl."))
+table(final_men_employed_11_merge$jowpppl, final_men_employed_11_merge$wave)
+
+final_men_employed_11_merge <- final_men_employed_11_merge %>% 
+  mutate(jomflex = reduce(select(., starts_with("jomflex")), coalesce)) %>% 
+  select(-starts_with("jomflex."))
+table(final_men_employed_11_merge$jomflex, final_men_employed_11_merge$wave)
+
+##recode variables##
+
+# Var: Workplace entitlements: Home based work
+
+freq(final_men_employed_11_merge$jowphbw)
+final_men_employed_11_merge$HBW<-"NA"
+final_men_employed_11_merge$HBW[final_men_employed_11_merge$jowphbw==1]<-"2-Entitled to home based work"
+final_men_employed_11_merge$HBW[final_men_employed_11_merge$jowphbw==2]<-"1-Not entitled to home based work"
+final_men_employed_11_merge$HBW[final_men_employed_11_merge$jowphbw==-3]<-"3-Don't know"
+freq(final_men_employed_11_merge$HBW)
+
+#Var: Workplace entitlement: Paid paternity leave
+freq(final_men_employed_11_merge$jowpppl)
+final_men_employed_11_merge$PPL<-"NA"
+final_men_employed_11_merge$PPL[final_men_employed_11_merge$jowpppl==1]<-"2-Entitled to paid paternity leave"
+final_men_employed_11_merge$PPL[final_men_employed_11_merge$jowpppl==2]<-"1-Not entitled to paid paternity leave"
+final_men_employed_11_merge$PPL[final_men_employed_11_merge$jowpppl==-3]<-"3-Don't know"
+freq(final_men_employed_11_merge$PPL)
+
+#Var: Workplace entitlement: Job flexibility
+freq(final_men_employed_11_merge$jomflex)
+final_men_employed_11_merge$FLEX<-"NA"
+final_men_employed_11_merge$FLEX[final_men_employed_11_merge$jomflex>=1]<-"1-Working times are not very flexible"
+final_men_employed_11_merge$FLEX[final_men_employed_11_merge$jomflex>=5]<-"2-Working times are quite flexible"
+freq(final_men_employed_11_merge$FLEX)
+
+
+#Remove NA's from relevant variables
+final_employed<- final_men_employed_11_merge%>%
+  filter(!PPL=="NA")%>%
+  filter(!HBW=="NA")%>%
+  filter(!EMPLOYTYPE=="Unknown or not currently working")
+
+##Sample statistics for employed sample
+table1::label(final_employed$AHW) <- "Weekly hours usually worked"
+table1::label(final_employed$AGE) <- "Age of respondent"
+table1::label(final_employed$EMPLOYTYPE) <- "Employment sector"
+table1::label(final_employed$haskids) <- "Has resident children"
+table1::label(final_employed$EDU) <- "Education"
+table1::label(final_employed$AGEC_oldest_child)  <- "Age of oldest resident child"
+table1::label(final_employed$PARTEMP)  <- "Partner's employment status"
+table1::label(final_employed$FLEX)  <- "Access to flexible working hours"
+table1::label(final_employed$PPL)  <- "Paid paternity leave entitlement"
+table1::label(final_employed$HBW)  <- "Home based work entitlement"
+table1::label(final_employed$LOCALUNEMPLOYMENT)  <- "Local unemployment rate"
+table1::label(final_employed$BCKGRD)  <- "Migration background and Aboriginal and Torres Strait Islander Status"
+table1::table1(~ AHW + haskids + AGE + EMPLOYTYPE + AVG_HOURLY_WAGE + PPL | haskids, data = final_employed)
+
+##
+##Descriptive statistics::Employed sample only##
+##
+
+##entitled to paid paternity leave by year
+
+viridis_palette3 <- viridis(3)
+viridis_palette3[1] <- "#33638DFF"
+viridis_palette3[2] <- "#238A8DFF" 
+viridis_palette3[3] <- "#3CBB75FF" 
+
+#Recode
+prop_PPL <- count(final_employed, PPL, YEAR)
+prop_PPL$PPL[prop_PPL$PPL=="2-Entitled to paid paternity leave"]<-"3-Entitled to paid paternity leave"
+prop_PPL$PPL[prop_PPL$PPL=="1-Not entitled to paid paternity leave"]<-"2-Not entitled to paid paternity leave"
+prop_PPL$PPL[prop_PPL$PPL=="3-Don't know"]<-"1-Don't know"
+prop_PPL <- group_by(prop_PPL, YEAR)
+prop_PPL <- mutate(prop_PPL, prop = n / sum(n))
+
+ggplot(prop_PPL) +
+  aes(x = YEAR, y = prop, fill = PPL) +
+  geom_col()+
+  theme(legend.direction = "horizontal", legend.position = "bottom",legend.justification = "center", legend.box.just = "center")+
+  scale_fill_manual(guide = guide_legend(),
+        name = "Paid paternity leave entitlement",
+                    labels = c("Don't know", "Not entitled to paid paternity leave", "Entitled to paid paternity leave"),
+                    values = viridis_palette3)+
+  geom_text(aes(label=paste0(sprintf("%1.1f", prop*100),"%")),
+              position=position_fill(vjust=0.5), colour="white")+
+  coord_flip() +
+  labs(x = "Year", y = "Proportion of responses") +
+  theme_bw()
+
+## Proportion of those entitled to paid paternity leave by occupation classification
+final_employed_PPLyes <- final_employed %>%
+  filter(PPL=="2-Entitled to paid paternity leave")
+
+freq(final_employed_PPLyes$PPL)
+
+prop_PPL_yes <- count(final_employed_PPLyes, EMPLOYTYPE, YEAR)
+prop_PPL_yes <- group_by(prop_PPL_yes, YEAR)
+prop_PPL_yes <- mutate(prop_PPL_yes, prop = n / sum(n))
+ggplot(prop_PPL_yes) +
+  aes(x = YEAR, y = prop, fill = EMPLOYTYPE) +
+  geom_col()+
+  theme(legend.direction = "horizontal", legend.position = "bottom",legend.justification = "center", legend.box.just = "center")+
+  scale_fill_manual(guide = guide_legend(),
+                    name = "Employment classification",
+                    values = viridis(8))+
+  geom_text(aes(label=paste0(sprintf("%1.1f", prop*100),"%")),
+            position=position_fill(vjust=0.5), colour="white")+
+  labs(x = "Year", y = "Proportion of responses") +
+  theme_bw()
+  
+  ##Analysis
+
+PPL_model<-lm(AHW ~ AGEC_oldest_child*PPL+PARTEMP+YEAR+AGE+EDU+LOCALUNEMPLOYMENT+BCKGRD+EMPLOYTYPE, data=final_employed)
+
+viridis_new <- viridis(3)
+viridis_new[1] <- "#20a386"
+viridis_new[2] <- "#404688"
+viridis_new[3] <- "#bade28"
+
+
+set_theme(base = theme_light())
+plot_model(PPL_model, 
+           type = "pred", 
+           terms = c("AGEC_oldest_child","PPL"), 
+           col = viridis_new, 
+           ylab = "Predicted values of usual hours worked")
+           
+           ##AHW predicted by PPL and year
+final_employed_kids<-final_employed %>%
+  filter(!tcr==0)
+
+final_employed_nokids<-final_employed %>%
+  filter(!tcr==1)
+
+viridis_new <- viridis(3)
+viridis_new[1] <- "#20a386"
+viridis_new[2] <- "#404688"
+viridis_new[3] <- "#bade28"
+
+group.colours <- c("1-Not entitled to paid paternity leave" = "#404688", "2-Entitled to paid paternity leave" = "#20a386",  "3-Don't know" ="#bade28")
+
+##KIDS
+PPL_year_model_kids<-lm(AHW ~ PPL*YEAR+PARTEMP+AGE+EDU+LOCALUNEMPLOYMENT+BCKGRD+EMPLOYTYPE, data=final_employed_kids)
+
+predict1 <- ggeffects::ggpredict(PPL_year_model_kids, 
+                                 terms = c("YEAR", "PPL"))
+
+ggplot(predict1, aes(x = x, y = predicted, group=group)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), alpha = .15) +
+  geom_line(aes(colour = group), size = 1.5)+
+  labs(x = "Year", y = "Predicted usual hours worked") +
+  theme_bw() +
+  scale_color_manual(values =group.colours,
+                     name = "Paid paternity leave entitlement")+
+  scale_fill_manual(values = group.colours,
+                    name = "Paid paternity leave entitlement")+
+  theme(legend.position = "bottom",
+        legend.key.height = unit(1,"cm"),
+        legend.key.width = unit(1,"cm"),
+        legend.background = element_blank(),
+        legend.text = element_text(size = 12, color = "black"))+
+  geom_hline(yintercept=38,linetype=3)
+
+
+##No kids
+
+PPL_year_model_nokids<-lm(AHW ~ PPL*YEAR+PARTEMP+AGE+EDU+LOCALUNEMPLOYMENT+BCKGRD+EMPLOYTYPE, data=final_employed_nokids)
+
+predict2 <- ggeffects::ggpredict(PPL_year_model_nokids, 
+                                 terms = c("YEAR", "PPL"))
+ggplot(predict2, aes(x = x, y = predicted, group=group)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), alpha = .15) +
+  ylab("Predicted usual hours worked") +
+  xlab("Interaction: Year and paid paternity leave entitlement") +
+  geom_line(aes(colour = group), size = 1.5)+
+  labs(x = "Year", y = "Predicted usual hours worked") +
+  theme_bw() +
+  scale_color_manual(values = group.colours,
+                     name = "Paid paternity leave entitlement")+
+  scale_fill_manual(values = group.colours,
+                    name = "Paid paternity leave entitlement")+
+  theme(legend.position = "bottom",
+        legend.key.height = unit(1,"cm"),
+        legend.key.width = unit(1,"cm"),
+        legend.background = element_blank(),
+        legend.text = element_text(size = 12, color = "black"))+
+  geom_hline(yintercept=38,linetype=3)
